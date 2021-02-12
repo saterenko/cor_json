@@ -84,7 +84,7 @@ cor_json_parse(cor_json_t *json, const char *data, size_t size)
                     break;
                 }
                 if (cor_unlikely(c == '}')) {
-                    if (--stack_index == -1) {
+                    if (cor_unlikely(--stack_index == -1)) {
                         p = end;
                         break;
                     }
@@ -97,12 +97,12 @@ cor_json_parse(cor_json_t *json, const char *data, size_t size)
                 }
                 break;
             case quote_before_key_s:
-                if (++stack_index == COR_JSON_STACK_SIZE) {
+                if (cor_unlikely(++stack_index == COR_JSON_STACK_SIZE)) {
                     cor_json_parse_error("COR_JSON_STACK_SIZE exceed");
                     return cor_error;
                 }
                 stack[stack_index] = cor_json_node_add_last(json, stack[stack_index - 1]);
-                if (!stack[stack_index]) {
+                if (cor_unlikely(!stack[stack_index])) {
                     cor_json_parse_error("internal error");
                     return cor_error;
                 }
@@ -184,7 +184,23 @@ cor_json_parse(cor_json_t *json, const char *data, size_t size)
                 }
                 break;
             case sp_after_value_s:
-                break;
+                if (cor_likely(c == ',')) {
+                    state = sp_before_key_s;
+                    break;
+                }
+                if (cor_likely(c == ' ' || c == '\t' || c == '\n' || c == '\r')) {
+                    break;
+                }
+                if (cor_likely(c == '}')) {
+                    if (--stack_index == -1) {
+                        p = end;
+                        break;
+                    }
+                    state = after_object_close_s;
+                    break;
+                }
+                cor_json_parse_error("bad symbol");
+                return cor_error;
             case backslash_in_value_s:
                 if (cor_unlikely(c == '\\')) {
                     break;
@@ -269,6 +285,8 @@ cor_json_node_type(const char *p, size_t size)
                     case 't':
                         state = exp_tr_s;
                         break;
+                    default:
+                        return COR_JSON_NODE_UNDEFINED;
                 }
                 break;
             case exp_digit_s:
