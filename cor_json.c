@@ -52,7 +52,7 @@ cor_json_parse(cor_json_t *json, const char *data, size_t size)
         sp_before_colon_s,
         sp_after_colon_s,
         string_value_s,
-        array_value_s,
+        sp_before_array_value_s,
         other_value_s,
         sp_after_value_s,
         backslash_in_value_s,
@@ -65,11 +65,12 @@ cor_json_parse(cor_json_t *json, const char *data, size_t size)
     int stack_index = 0;
     stack[0] = &json->root;
     stack[0]->type = COR_JSON_NODE_OBJECT;
+    cor_json_node_t *node = stack[0];
     /**/
     for (; p < end; p++) {
         char c = *p;
         switch (state) {
-            case begin_s:
+            case begin_s: {
                 if (cor_unlikely(c == ' ' || c == '\t' || c == '\n' || c == '\r')) {
                     break;
                 }
@@ -79,7 +80,8 @@ cor_json_parse(cor_json_t *json, const char *data, size_t size)
                 }
                 cor_json_parse_error("bad symbol");
                 return cor_error;
-            case sp_before_key_s:
+            }
+            case sp_before_key_s: {
                 if (cor_unlikely(c == ' ' || c == '\t' || c == '\n' || c == '\r')) {
                     break;
                 }
@@ -96,27 +98,26 @@ cor_json_parse(cor_json_t *json, const char *data, size_t size)
                     break;
                 }
                 break;
-            case quote_before_key_s:
-                if (cor_unlikely(++stack_index == COR_JSON_STACK_SIZE)) {
-                    cor_json_parse_error("COR_JSON_STACK_SIZE exceed");
-                    return cor_error;
-                }
-                stack[stack_index] = cor_json_node_add_last(json, stack[stack_index - 1]);
-                if (cor_unlikely(!stack[stack_index])) {
+            }
+            case quote_before_key_s: {
+                node = cor_json_node_add_last(json, stack[stack_index]);
+                if (cor_unlikely(!node)) {
                     cor_json_parse_error("internal error");
                     return cor_error;
                 }
-                stack[stack_index]->name = p;
+                node->name = p;
                 state = key_s;
                 break;
-            case key_s:
+            }
+            case key_s: {
                 if (cor_likely(c != '"')) {
                     break;
                 }
-                stack[stack_index]->name_size = p - stack[stack_index]->name;
+                node->name_size = p - node->name;
                 state = sp_before_colon_s;
                 break;
-            case sp_before_colon_s:
+            }
+            case sp_before_colon_s: {
                 if (cor_likely(c == ':')) {
                     state = sp_after_colon_s;
                     break;
@@ -126,33 +127,45 @@ cor_json_parse(cor_json_t *json, const char *data, size_t size)
                 }
                 cor_json_parse_error("bad symbol");
                 return cor_error;
-            case sp_after_colon_s:
+            }
+            case sp_after_colon_s: {
                 if (cor_unlikely(c == ' ' || c == '\t' || c == '\n' || c == '\r')) {
                     break;
                 }
                 switch (c) {
                     case '"':
-                        stack[stack_index]->type = COR_JSON_NODE_STRING;
-                        stack[stack_index]->value = p + 1;
+                        node->type = COR_JSON_NODE_STRING;
+                        node->value = p + 1;
                         state = string_value_s;
                         break;
                     case '{':
-                        stack[stack_index]->type = COR_JSON_NODE_OBJECT;
+                        if (++stack_index == COR_JSON_STACK_SIZE) {
+                            cor_json_parse_error("maximum stack size exceed");
+                            return cor_error;
+                        }
+                        node->type = COR_JSON_NODE_OBJECT;
+                        stack[stack_index] = node;
                         state = sp_before_key_s;
                         break;
                     case '[':
-                        stack[stack_index]->type = COR_JSON_NODE_ARRAY;
-                        state = array_value_s;
+                        if (++stack_index == COR_JSON_STACK_SIZE) {
+                            cor_json_parse_error("maximum stack size exceed");
+                            return cor_error;
+                        }
+                        node->type = COR_JSON_NODE_ARRAY;
+                        stack[stack_index] = node;
+                        state = sp_before_array_value_s;
                         break;
                     default:
-                        stack[stack_index]->value = p;
+                        node->value = p;
                         state = other_value_s;
                         break;
                 }
                 break;
-            case string_value_s:
+            }
+            case string_value_s: {
                 if (cor_unlikely(c == '"')) {
-                    stack[stack_index]->value_size = p - stack[stack_index]->value;
+                    node->value_size = p - node->value;
                     state = sp_after_value_s;
                     break;
                 }
@@ -161,13 +174,30 @@ cor_json_parse(cor_json_t *json, const char *data, size_t size)
                     break;
                 }
                 break;
-            case array_value_s:
+            }
+            case sp_before_array_value_s: {
+                if (cor_unlikely(c == ' ' || c == '\t' || c == '\n' || c == '\r')) {
+                    break;
+                }
+                if (cor_unlikely(c == ']')) {
+                    if (cor_unlikely(--stack_index == -1)) {
+                        p = end;
+                        break;
+                    }
+                    state = after_object_close_s;
+                    break;
+                }
+                if (cor_likely(c == '"')) {
+                    state = quote_before_key_s;
+                    break;
+                }
                 break;
-            case other_value_s:
+            }
+            case other_value_s: {
                 if (cor_unlikely(c == ',')) {
-                    stack[stack_index]->value_size = p - stack[stack_index]->value;
-                    stack[stack_index]->type = cor_json_node_type(stack[stack_index]->value, stack[stack_index]->value_size);
-                    if (stack[stack_index]->type == COR_JSON_NODE_UNDEFINED) {
+                    node->value_size = p - node->value;
+                    node->type = cor_json_node_type(node->value, node->value_size);
+                    if (node->type == COR_JSON_NODE_UNDEFINED) {
                         cor_json_parse_error("undefined value type");
                         return cor_error;
                     }
@@ -175,6 +205,12 @@ cor_json_parse(cor_json_t *json, const char *data, size_t size)
                     break;
                 }
                 if (cor_unlikely(c == '}')) {
+                    node->value_size = p - node->value;
+                    node->type = cor_json_node_type(node->value, node->value_size);
+                    if (node->type == COR_JSON_NODE_UNDEFINED) {
+                        cor_json_parse_error("undefined value type");
+                        return cor_error;
+                    }
                     if (--stack_index == -1) {
                         p = end;
                         break;
@@ -183,7 +219,8 @@ cor_json_parse(cor_json_t *json, const char *data, size_t size)
                     break;
                 }
                 break;
-            case sp_after_value_s:
+            }
+            case sp_after_value_s: {
                 if (cor_likely(c == ',')) {
                     state = sp_before_key_s;
                     break;
@@ -201,13 +238,28 @@ cor_json_parse(cor_json_t *json, const char *data, size_t size)
                 }
                 cor_json_parse_error("bad symbol");
                 return cor_error;
-            case backslash_in_value_s:
+            }
+            case backslash_in_value_s: {
                 if (cor_unlikely(c == '\\')) {
                     break;
                 }
                 state = string_value_s;
                 break;
+            }
             case after_object_close_s:
+                if (cor_unlikely(c == ' ' || c == '\t' || c == '\n' || c == '\r')) {
+                    break;
+                }
+                if (cor_unlikely(c == '}')) {
+                    if (--stack_index == -1) {
+                        p = end;
+                    }
+                    break;
+                }
+                if (cor_likely(c == ',')) {
+                    state = sp_before_key_s;
+                    break;
+                }
                 break;
         }
     }
